@@ -17,6 +17,7 @@ abstract contract Upgradeable is
 {
     mapping(address => uint256) nonces;
     mapping(bytes32 => Order) orders;
+    mapping(bytes32 => bool) activeOrders;
     mapping(address => bool) public defaultCollections;
 
     function initialize() external initializer {

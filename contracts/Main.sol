@@ -7,6 +7,7 @@ import "./utils/TransferToken.sol";
 import "./interfaces/IERC165.sol";
 import "./interfaces/IERC721.sol";
 import "./interfaces/IERC1155.sol";
+import "./interfaces/IERC20.sol";
 
 import "./libs/ERC165Checker.sol";
 import "./common/Events.sol";
@@ -34,7 +35,7 @@ contract NFTMarketplace is Upgradeable {
     }
 
     /**
-        @dev
+        @dev Execute when the user makes a request to create an order.
         @param collection Collection's address of the NFT
         @param tokenId  The NFT's id
         @param amount   The amount of NFT to put on sale
@@ -58,25 +59,23 @@ contract NFTMarketplace is Upgradeable {
             createdAt: block.timestamp
         });
 
+        if (order.paymentToken != address(0)) {
+            require(
+                order.paymentToken.isERC20Compatible(),
+                "INVALID_TOKEN_ADDRESS"
+            );
+        }
+
         bytes32 orderId = _createOrder(order);
 
         // Transfer NFT to this smart contract
-        if (order.collection.isERC721Compatible()) {
-            require(order.amount == 1, "ONLY_ONE_ERC721");
-            IERC721(order.collection).safeTransferFrom(
-                order.seller,
-                address(this),
-                order.tokenId
-            );
-        } else if (order.collection.isERC1155Compatible()) {
-            IERC1155(order.collection).safeTransferFrom(
-                order.seller,
-                address(this),
-                order.tokenId,
-                order.amount,
-                ""
-            );
-        } else revert("INVALID_ADDRESS");
+        _transferNFT(
+            order.collection,
+            order.seller,
+            address(this),
+            order.tokenId,
+            order.amount
+        );
 
         emit OrderCreated(orderId);
     }
@@ -84,24 +83,92 @@ contract NFTMarketplace is Upgradeable {
     function _createOrder(Order memory order) internal returns (bytes32 id) {
         id = hash(order);
         orders[id] = order;
+        activeOrders[id] = true;
     }
 
-    // function cancelOrder(bytes32 id) external {
-    //     Order memory order = orders[id];
+    /**
+        @dev Execute when the seller makes a request to cancel his/her order.
+        @param id The order's id to be cancelled
+     */
+    function cancelOrder(bytes32 id) external {
+        Order memory order = orders[id];
 
-    //     delete orders[id];
+        require(activeOrders[id], "INACTIVE_ORDER");
+        require(msg.sender == order.seller, "ONLY_SELLER");
 
-    //     // Transfer NFT back to seller.
-    //     if (order.collection.isERC721Compatible()) {
-    //         IERC721(order.collection).safeTransfer(order.seller, order.tokenId);
-    //     } else if (order.collection.isERC1155Compatible()) {
-    //         IERC1155(order.collection).safeTransferFrom(
-    //             order.seller,
-    //             address(this),
-    //             order.tokenId,
-    //             order.amount,
-    //             ""
-    //         );
-    //     }
-    // }
+        delete orders[id];
+        activeOrders[id] = false;
+
+        // Transfer NFT back to seller.
+        _transferNFT(
+            order.collection,
+            address(this),
+            order.seller,
+            order.tokenId,
+            order.amount
+        );
+
+        emit OrderCanceled(id);
+    }
+
+    /**
+        @dev Execute when the user makes a request to buy a NFT.
+        @param orderId The order's id
+        @param buyAmount The amount of NFT to buy
+     */
+    function buy(bytes32 orderId, uint256 buyAmount) external payable {
+        Order memory order = orders[orderId];
+
+        require(activeOrders[orderId], "INACTIVE_ORDER");
+
+        uint256 remain = order.amount - buyAmount;
+        require(remain >= 0, "Not enough NFT");
+
+        if (remain == 0) {
+            delete orders[orderId];
+            activeOrders[orderId] = false;
+        } else {
+            order.amount = remain;
+        }
+
+        // Handle payment
+        uint256 decimals = IERC20(order.paymentToken).decimals();
+        uint256 paymentAmount = buyAmount * order.price * 10 ** decimals;
+
+        if (order.paymentToken == address(0)) {
+            require(msg.value == paymentAmount, "VALUE_NOT_MATCH");
+            (bool success, ) = order.seller.call{value: msg.value}("");
+            require(success, "FAIL_TRANSFER_ETH");
+        } else {
+            IERC20(order.paymentToken).transferFrom(
+                msg.sender,
+                order.seller,
+                paymentAmount
+            );
+        }
+
+        // Transfer NFT to buyer.
+        _transferNFT(
+            order.collection,
+            address(this),
+            msg.sender,
+            order.tokenId,
+            buyAmount
+        );
+    }
+
+    function _transferNFT(
+        address collection,
+        address from,
+        address to,
+        uint256 id,
+        uint256 amount
+    ) internal {
+        if (collection.isERC721Compatible()) {
+            require(amount == 1, "INVALID_NFT_AMOUNT");
+            IERC721(collection).safeTransferFrom(from, to, id);
+        } else if (collection.isERC1155Compatible()) {
+            IERC1155(collection).safeTransferFrom(from, to, id, amount, "");
+        } else revert("INVALID_COLLECTION_ADDRESS");
+    }
 }
