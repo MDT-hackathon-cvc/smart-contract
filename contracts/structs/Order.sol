@@ -7,11 +7,10 @@ abstract contract OrderStruct {
         address seller;
         address paymentToken;
         address collection;
-        uint256 id;
+        uint256 tokenId;
         uint256 amount;
         uint256 price;
         uint256 createdAt;
-        uint256 nonce;
     }
 
     // Hash function for CreateOrder struct.
@@ -22,11 +21,10 @@ abstract contract OrderStruct {
                     order.seller,
                     order.paymentToken,
                     order.collection,
-                    order.id,
+                    order.tokenId,
                     order.amount,
                     order.price,
-                    order.createdAt,
-                    order.nonce
+                    order.createdAt
                 )
             );
     }
