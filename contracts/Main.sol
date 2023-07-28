@@ -2,6 +2,7 @@
 pragma solidity ^0.8.9;
 
 import "./common/Upgradeable.sol";
+import "./common/Receiver.sol";
 import "./utils/TransferNFT.sol";
 import "./utils/TransferToken.sol";
 import "./interfaces/IERC165.sol";
@@ -12,10 +13,17 @@ import "./interfaces/IERC20.sol";
 import "./libs/ERC165Checker.sol";
 import "./common/Events.sol";
 
-contract NFTMarketplace is Upgradeable {
+contract NFTMarketplace is Upgradeable, Receiver {
     // Library for checking which type of the given collection's address is.
     using ERC165Checker for address;
 
+    /**
+        @dev Execute when the user mints new NFT
+        @param collection The collection's address
+        @param id The token's id (cid to decimal)
+        @param amount The amount to mint
+        @param uri The NFT's uri (ipfs link)
+     */
     function mint(
         address collection,
         uint256 id,
@@ -26,7 +34,7 @@ contract NFTMarketplace is Upgradeable {
 
         if (collection.isERC721Compatible()) {
             require(amount == 1, "ONLY_ONE_ERC721");
-            IERC721(collection).safeMint(msg.sender, uri);
+            IERC721(collection).safeMint(msg.sender, id, uri);
         } else if (collection.isERC1155Compatible()) {
             IERC1155(collection).mint(msg.sender, id, amount, uri, "");
         } else revert("INVALID ADDRESS");
@@ -48,7 +56,7 @@ contract NFTMarketplace is Upgradeable {
         uint256 amount,
         address paymentToken,
         uint256 price
-    ) external {
+    ) external returns (bytes32) {
         Order memory order = Order({
             seller: msg.sender,
             paymentToken: paymentToken,
@@ -78,12 +86,36 @@ contract NFTMarketplace is Upgradeable {
         );
 
         emit OrderCreated(orderId);
+
+        return orderId;
     }
 
     function _createOrder(Order memory order) internal returns (bytes32 id) {
         id = hash(order);
-        orders[id] = order;
+        orderInfos[id] = order;
         activeOrders[id] = true;
+        orders.push(id);
+    }
+
+    function _removeOrder(bytes32 id) internal {
+        // Delete from `orderInfos`
+        delete orderInfos[id];
+
+        // Deactivate the order
+        activeOrders[id] = false;
+
+        // Remove from `orders` array
+        bytes32[] memory currentOrders = orders;
+        uint256 len = currentOrders.length;
+
+        for (uint256 i = 0; i < len; i++) {
+            if (currentOrders[i] == id) {
+                currentOrders[i] = currentOrders[len - 1];
+                orders = currentOrders;
+                orders.pop();
+                break;
+            }
+        }
     }
 
     /**
@@ -91,13 +123,12 @@ contract NFTMarketplace is Upgradeable {
         @param id The order's id to be cancelled
      */
     function cancelOrder(bytes32 id) external {
-        Order memory order = orders[id];
+        Order memory order = orderInfos[id];
 
         require(activeOrders[id], "INACTIVE_ORDER");
         require(msg.sender == order.seller, "ONLY_SELLER");
 
-        delete orders[id];
-        activeOrders[id] = false;
+        _removeOrder(id);
 
         // Transfer NFT back to seller.
         _transferNFT(
@@ -117,7 +148,7 @@ contract NFTMarketplace is Upgradeable {
         @param buyAmount The amount of NFT to buy
      */
     function buy(bytes32 orderId, uint256 buyAmount) external payable {
-        Order memory order = orders[orderId];
+        Order memory order = orderInfos[orderId];
 
         require(activeOrders[orderId], "INACTIVE_ORDER");
 
@@ -125,27 +156,24 @@ contract NFTMarketplace is Upgradeable {
         require(remain >= 0, "Not enough NFT");
 
         if (remain == 0) {
-            delete orders[orderId];
-            activeOrders[orderId] = false;
+            _removeOrder(orderId);
         } else {
             order.amount = remain;
         }
 
         // Handle payment
-        uint256 decimals = IERC20(order.paymentToken).decimals();
-        uint256 paymentAmount = buyAmount * order.price * 10 ** decimals;
+        // uint256 decimals = IERC20(order.paymentToken).decimals();
+        uint256 paymentAmount = buyAmount * order.price;
+        uint256 feeAmount = (paymentAmount * fee) / RATIO;
 
-        if (order.paymentToken == address(0)) {
-            require(msg.value == paymentAmount, "VALUE_NOT_MATCH");
-            (bool success, ) = order.seller.call{value: msg.value}("");
-            require(success, "FAIL_TRANSFER_ETH");
-        } else {
-            IERC20(order.paymentToken).transferFrom(
-                msg.sender,
-                order.seller,
-                paymentAmount
-            );
-        }
+        _transferToken(
+            order.paymentToken,
+            msg.sender,
+            order.seller,
+            paymentAmount - feeAmount
+        );
+
+        _transferToken(order.paymentToken, msg.sender, recipient, feeAmount);
 
         // Transfer NFT to buyer.
         _transferNFT(
@@ -155,6 +183,8 @@ contract NFTMarketplace is Upgradeable {
             order.tokenId,
             buyAmount
         );
+
+        emit Purchased(orderId, msg.sender, paymentAmount);
     }
 
     function _transferNFT(
@@ -170,5 +200,19 @@ contract NFTMarketplace is Upgradeable {
         } else if (collection.isERC1155Compatible()) {
             IERC1155(collection).safeTransferFrom(from, to, id, amount, "");
         } else revert("INVALID_COLLECTION_ADDRESS");
+    }
+
+    function _transferToken(
+        address token,
+        address from,
+        address to,
+        uint256 amount
+    ) internal {
+        if (token == address(0)) {
+            (bool success, ) = to.call{value: amount}("");
+            require(success, "FAIL_TRANSFER_ETH");
+        } else {
+            IERC20(token).transferFrom(from, to, amount);
+        }
     }
 }

@@ -8,13 +8,7 @@ import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/token/ERC721/extensions/ERC721Burnable.sol";
 import "@openzeppelin/contracts/utils/Counters.sol";
 
-contract MDTToken is
-    ERC721,
-    ERC721URIStorage,
-    Pausable,
-    Ownable,
-    ERC721Burnable
-{
+contract MDT721 is ERC721, ERC721URIStorage, Pausable, Ownable, ERC721Burnable {
     using Counters for Counters.Counter;
 
     Counters.Counter private _tokenIdCounter;
@@ -32,9 +26,11 @@ contract MDTToken is
         _unpause();
     }
 
-    function safeMint(address to, string memory uri) public onlyMinter {
-        uint256 tokenId = _tokenIdCounter.current();
-        _tokenIdCounter.increment();
+    function safeMint(
+        address to,
+        uint256 tokenId,
+        string memory uri
+    ) public onlyMinter {
         _safeMint(to, tokenId);
         _setTokenURI(tokenId, uri);
     }
